@@ -1,0 +1,15 @@
+// src/sed.pest
+// example: s/foo/bar/g
+
+WHITESPACE = _{ " " | "\t" }
+NEWLINE    = _{ "\n" | "\r\n" }
+ANY_CHAR   = _{ ANY* }
+delimiter = _{ "/" | "#" | "@" }
+NON_DELIM = _{ (!NEWLINE ~ !delimiter ~ ANY) }  // Match anything that is not a newline or delimiter.
+script = { command+ }
+command = { substitute }
+
+substitute = { "s" ~ delimiter ~ pattern ~ delimiter ~ replacement ~ delimiter? ~ flags? }
+pattern = { NON_DELIM+ }
+replacement = { NON_DELIM* }
+flags = { "g" | "i" }
