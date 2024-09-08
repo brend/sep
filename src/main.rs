@@ -1,94 +1,57 @@
-use pest::Parser;
-use pest::iterators::Pair;
-use pest_derive::Parser;
-use regex::Regex;
+mod config;
+mod input_source;
+mod output_target;
+mod parsing;
+mod processing;
 
-#[derive(Parser)]
-#[grammar = "sed.pest"] // Path to the grammar file
-struct SedParser;
+use clap::Parser;
+use glob::glob;
+use crate::config::Config;
+use crate::input_source::{FileInputSource, InputSource};
+use crate::output_target::StdoutTarget;
+use crate::parsing::parse_script;
+use crate::processing::process_input;
 
 fn main() {
-    let input_script = "s/foo/bar/g";  // Example sed-like script
-    let input_text = "The word foo is often used as a metavariable";    // Example text to apply the substitution to
+    let config = Config::parse();
+    let script = parse_script(&config.script).expect("Failed to parse script");
+    let mut input_sources: Vec<Box<dyn InputSource>> = Vec::new();
 
-    println!("Input script: {}", input_script);
-    println!("Input text: {}", input_text);
-
-    // Parse the input script
-    let pairs = SedParser::parse(Rule::script, input_script)
-        .unwrap_or_else(|e| panic!("Failed to parse: {}", e));
-
-    // Process each command in the script
-    for pair in pairs {
-        process_script(pair, input_text);
-    }
-}
-
-// Process the parsed `script` rule
-fn process_script(pair: Pair<Rule>, text: &str) {
-    match pair.as_rule() {
-        Rule::script => {
-            for inner_pair in pair.into_inner() {
-                process_command(inner_pair, text);
+    if config.files.is_empty() {
+        // If no files are specified, read from stdin
+        input_sources.push(Box::new(FileInputSource {
+            filename: "-".to_string(),
+        }));
+    } else {
+        // Otherwise, read from the specified files
+        for pattern in &config.files {
+            // Expand globs in the file patterns
+            let matches = glob(pattern).expect("Failed to read glob pattern");
+            for entry in matches {
+                match entry {
+                    Ok(path) => {
+                        input_sources.push(Box::new(FileInputSource {
+                            filename: path.to_string_lossy().to_string(),
+                        }));
+                    }
+                    Err(e) => {
+                        eprintln!("Error matching pattern {}: {}", pattern, e);
+                        std::process::exit(2);
+                    }
+                }
             }
-        },
-        _ => unreachable!(),
-    }
-}
-
-// Process the parsed `command` rule
-fn process_command(pair: Pair<Rule>, text: &str) {
-    match pair.as_rule() {
-        Rule::command => {
-            let inner_pair = pair.into_inner().next().unwrap();
-            process_substitute(inner_pair, text);
-        },
-        _ => unreachable!(),
-    }
-}
-
-// Process the parsed `substitute` rule
-fn process_substitute(pair: Pair<Rule>, text: &str) {
-    match pair.as_rule() {
-        Rule::substitute => {
-            let mut inner_rules = pair.into_inner();
-
-            // Extract the pattern, replacement, and flags
-            let pattern = inner_rules.next().unwrap().as_str();
-            let replacement = inner_rules.next().unwrap().as_str();
-            let flags = inner_rules.next().map(|p| p.as_str());
-
-            println!("Parse result: Substitute command");
-            println!("Pattern: {}", pattern);
-            println!("Replacement: {}", replacement);
-            if let Some(flag) = flags {
-                println!("Flags: {}", flag);
-            }
-
-            // Apply the substitution to the text
-            let result = apply_substitution(pattern, replacement, flags, text);
-            println!("Resulting text: {}", result);
-        }
-        _ => unreachable!(),
-    }
-}
-
-// Function to apply the substitution using regex
-fn apply_substitution(pattern: &str, replacement: &str, flags: Option<&str>, text: &str) -> String {
-    // Build the regex with the pattern
-    let re = match Regex::new(pattern) {
-        Ok(re) => re,
-        Err(err) => panic!("Invalid regex pattern: {}", err),
-    };
-
-    // Check if we have the global flag 'g'
-    if let Some(flag) = flags {
-        if flag.contains('g') {
-            // Global replacement
-            return re.replace_all(text, replacement).to_string();
         }
     }
 
-    // Single replacement (no global flag)
-    re.replace(text, replacement).to_string()
+    let mut output = StdoutTarget;
+
+    match process_input(config, script, input_sources, &mut output) {
+        Ok(match_count) => {
+            std::process::exit(if match_count > 0 { 0 } else { 1 });
+        }
+        Err(error) => {
+            eprintln!("Error: {}", error);
+            std::process::exit(2);
+        }
+    }
 }
